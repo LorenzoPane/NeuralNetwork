@@ -1,12 +1,26 @@
 import numpy as np
-from scipy.stats import truncnorm
+from typing import Iterator
+
+
+Vector = np.array
+Matrix = np.array
 
 
 # from https://stackoverflow.com/a/42874900
-def indices_to_one_hot(data, nb_classes):
-    """Convert an iterable of indices to one-hot encoded labels."""
+def indices_to_one_hot(data: int, nb_classes: int) -> Vector:
     targets = np.array(data).reshape(-1)
     return np.eye(nb_classes)[targets]
+
+
+def load_data(path: str) -> (np.array, Iterator):
+    raw = np.loadtxt(path, delimiter=',')
+
+    labels = (int(i) for i in raw[:, 0])
+    labels = (indices_to_one_hot(l, 10) for l in labels)
+
+    images = np.asfarray(raw)[:, 1:] * 0.99 / 255 + 0.01
+
+    return images, labels
 
 
 def sigmoid(x):
@@ -14,49 +28,53 @@ def sigmoid(x):
 
 
 class Network:
-    def __init__(self, in_size, hidden_size, out_size, bias):
-        self.in_size = in_size
-        self.hidden_size = hidden_size
-        self.out_size = out_size
+    def __init__(self, structure: list, bias: float):
         self.bias = bias
+        self.weights = []
 
         # Init random weights
-        half_range = 1 / np.sqrt(in_size + 1)
-        tn = truncnorm(-half_range, half_range, scale=1, loc=0)
-        self.input_to_hidden_weights = tn.rvs((hidden_size, in_size + 1))
+        for in_dimensions, out_dimensions in zip(structure, structure[1:]):
+            scale = 1 / 3 / np.sqrt(in_dimensions + 1)
+            self.weights.append(
+                np.random.normal(0, scale, (out_dimensions, in_dimensions + 1)))
 
-        half_range = 1 / np.sqrt(hidden_size + 1)
-        tn = truncnorm(-half_range, half_range, scale=1, loc=0)
-        self.hidden_to_output_weights = tn.rvs((out_size, hidden_size + 1))
+    @staticmethod
+    def apply_layer(v: Vector, weight_matrix: Matrix) -> Vector:
+        return sigmoid(np.dot(weight_matrix, v))
 
-    def train(self, data, labels, iterations, step):
-        for iteration in range(iterations):
-            for index in range(len(data)):
-                in_v = np.array(np.concatenate((data[index], [self.bias])), ndmin=2).T
-                target_v = np.array(labels[index], ndmin=2).T
+    def add_bias(self, v: Vector) -> Vector:
+        return np.concatenate((v, [[self.bias]]))
 
-                # Apply network
-                hidden_output = np.concatenate((sigmoid(np.dot(self.input_to_hidden_weights, in_v)), [[self.bias]]))
-                output_output = sigmoid(np.dot(self.hidden_to_output_weights, hidden_output))
+    def apply_network(self, v: Vector) -> Vector:
+        v = np.array(v, ndmin=2).T
 
-                # Adjust weights
-                diff = target_v - output_output
-                self.hidden_to_output_weights += step * np.dot(diff * output_output * (1 - output_output), hidden_output.T)
+        for layer in self.weights:
+            v = self.apply_layer(self.add_bias(v), layer)
 
-                diff = np.dot(self.hidden_to_output_weights.T, diff)
-                self.input_to_hidden_weights += step * np.dot(diff * hidden_output * (1 - hidden_output), in_v.T)[:-1, :]
+        return v
 
-    def apply_network(self, in_v):
-        in_v = np.array(np.concatenate((in_v, [self.bias])), ndmin=2).T
-        hidden_output = np.concatenate((sigmoid(np.dot(self.input_to_hidden_weights, in_v)), [[self.bias]]))
-        return sigmoid(np.dot(self.hidden_to_output_weights, hidden_output))
+    def train(self, data: Iterator, labels: Iterator, iterations=1, step=0.1):
+        for _ in range(iterations):
+            for in_v, target_v in zip(data, labels):
+                # Apply
+                vs = [np.array(in_v, ndmin=2).T]
+                for layer in self.weights:
+                    vs.append(self.apply_layer(self.add_bias(vs[-1]), layer))
 
-    def test(self, data, labels):
+                # Adjust
+                diff = target_v.T - vs[-1]
+                for i in reversed(range(len(self.weights))):
+                    self.weights[i] += step * np.dot(
+                        diff * vs[i+1] * (1. - vs[i+1]),
+                        self.add_bias(vs[i]).T)
+                    diff = np.dot(self.weights[i].T[:-1], diff)
+
+    def test(self, images: Iterator, labels: Iterator) -> (int, int):
         success, failure = 0, 0
 
-        for i in range(len(data)):
-            result = self.apply_network(data[i]).argmax()
-            if result == labels[i].argmax():
+        for image, label in zip(images, labels):
+            result = self.apply_network(image).argmax()
+            if result == label.argmax():
                 success += 1
             else:
                 failure += 1
